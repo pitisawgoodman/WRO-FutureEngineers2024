@@ -1,178 +1,181 @@
-import cv2 as cv
-import numpy as np
 import RPi.GPIO as GPIO
 import time
+from gpiozero import Servo, Button
 
-# GPIO Setup
+# ตั้งค่า GPIO mode
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 
-# Motor and Servo Pins
-MOTOR_PIN1 = 17
-MOTOR_PIN2 = 27
-SERVO_PIN = 18
-ENA_PIN = 12  # PWM pin for enabling motor speed
+# กำหนด GPIO พินสำหรับ L298N Motor Driver (มอเตอร์ตัวเดียว)
+in1 = 24
+in2 = 23
+enA = 25
 
-GPIO.setup(MOTOR_PIN1, GPIO.OUT)
-GPIO.setup(MOTOR_PIN2, GPIO.OUT)
-GPIO.setup(SERVO_PIN, GPIO.OUT)
-GPIO.setup(ENA_PIN, GPIO.OUT)
+# ตั้งค่า GPIO พินเป็น Output
+GPIO.setup(in1, GPIO.OUT)
+GPIO.setup(in2, GPIO.OUT)
+GPIO.setup(enA, GPIO.OUT)
 
-# Initialize PWM for Servo
-servo = GPIO.PWM(SERVO_PIN, 50)
-servo.start(7.5)  # Neutral position
+# ตั้งค่าความถี่ PWM และสร้าง object PWM
+pwmA = GPIO.PWM(enA, 1000)  # ความถี่ 1kHz สำหรับ Motor A
+pwmA.start(0)  # เริ่มต้น PWM ด้วยค่า duty cycle ที่ 0
 
-# Initialize PWM for Motor Speed Control
-motor_pwm = GPIO.PWM(ENA_PIN, 100)  # 100Hz PWM frequency
-motor_pwm.start(0)  # Start with 0% duty cycle (motor off)
+# กำหนดพินเซอร์โว
+servo_pin = 22  # ใช้พิน GPIO 22
+servo = Servo(servo_pin)
 
-# Ultrasonic Sensor Pins
-FRONT_TRIG = 23
-FRONT_ECHO = 24
-LEFT_TRIG = 20
-LEFT_ECHO = 21
-RIGHT_TRIG = 5
-RIGHT_ECHO = 6
-BACK_TRIG = 22
-BACK_ECHO = 23
+# กำหนดพินปุ่ม
+button = Button(2)
 
-GPIO.setup(FRONT_TRIG, GPIO.OUT)
-GPIO.setup(FRONT_ECHO, GPIO.IN)
-GPIO.setup(LEFT_TRIG, GPIO.OUT)
-GPIO.setup(LEFT_ECHO, GPIO.IN)
-GPIO.setup(RIGHT_TRIG, GPIO.OUT)
-GPIO.setup(RIGHT_ECHO, GPIO.IN)
-GPIO.setup(BACK_TRIG, GPIO.OUT)
-GPIO.setup(BACK_ECHO, GPIO.IN)
+# กำหนด GPIO พินสำหรับเซ็นเซอร์แต่ละทิศทาง
+sensors = {
+    "front": {"trigger": 21, "echo": 20},
+    "back": {"trigger": 17, "echo": 27},
+    "left": {"trigger": 6, "echo": 5},
+    "right": {"trigger": 26, "echo": 19}
+}
 
-# Define Traffic Light Colors
-red_lower = np.array([0, 100, 100])
-red_upper = np.array([10, 255, 255])
-yellow_lower = np.array([18, 100, 100])
-yellow_upper = np.array([30, 255, 255])
-green_lower = np.array([45, 100, 100])
-green_upper = np.array([75, 255, 255])
+# ตั้งค่า GPIO พิน เป็น Input และ Output สำหรับเซ็นเซอร์
+for direction, sensor in sensors.items():
+    GPIO.setup(sensor["trigger"], GPIO.OUT)
+    GPIO.setup(sensor["echo"], GPIO.IN)
 
-# Initialize Camera
-cap = cv.VideoCapture(0)
+def distance(sensor):
+    """วัดระยะทางจากเซ็นเซอร์"""
+    GPIO.output(sensor["trigger"], True)
+    time.sleep(0.001)
+    GPIO.output(sensor["trigger"], False)
 
-def measure_distance(trig_pin, echo_pin, timeout=0.1):
-    GPIO.output(trig_pin, True)
-    time.sleep(0.00001)
-    GPIO.output(trig_pin, False)
+    start_time = time.time()
+    stop_time = time.time()
 
-    pulse_start = time.time()
-    while GPIO.input(echo_pin) == 0:
-        if time.time() - pulse_start > timeout:
-            return None
+    while GPIO.input(sensor["echo"]) == 0:
+        start_time = time.time()
 
-    pulse_start = time.time()
-    while GPIO.input(echo_pin) == 1:
-        if time.time() - pulse_start > timeout:
-            return None
+    while GPIO.input(sensor["echo"]) == 1:
+        stop_time = time.time()
 
-    pulse_end = time.time()
-    pulse_duration = pulse_end - pulse_start
-    distance = pulse_duration * 17150
-    return round(distance, 2)
-
-def drive_motor(direction, speed=100):
-    # Speed is a percentage (0-100) of the maximum PWM duty cycle
-    motor_pwm.ChangeDutyCycle(speed)
+    time_elapsed = stop_time - start_time
+    distance = (time_elapsed * 34300) / 2
     
-    if direction == 'forward':
-        GPIO.output(MOTOR_PIN1, GPIO.HIGH)
-        GPIO.output(MOTOR_PIN2, GPIO.LOW)
-    elif direction == 'backward':
-        GPIO.output(MOTOR_PIN1, GPIO.LOW)
-        GPIO.output(MOTOR_PIN2, GPIO.HIGH)
-    elif direction == 'stop':
-        GPIO.output(MOTOR_PIN1, GPIO.LOW)
-        GPIO.output(MOTOR_PIN2, GPIO.LOW)
-        motor_pwm.ChangeDutyCycle(0)  # Ensure motor is off
+    return distance
 
-def turn_servo(direction):
-    if direction == 'left':
-        servo.ChangeDutyCycle(5)
-    elif direction == 'right':
-        servo.ChangeDutyCycle(10)
-    elif direction == 'straight':
-        servo.ChangeDutyCycle(7.5)
+def move_forward(speed):
+    """เคลื่อนที่ไปข้างหน้า"""
+    GPIO.output(in1, GPIO.LOW)
+    GPIO.output(in2, GPIO.HIGH)
+    pwmA.ChangeDutyCycle(speed)
 
-def detect_traffic_light(frame):
-    hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
-    red_mask = cv.inRange(hsv, red_lower, red_upper)
-    yellow_mask = cv.inRange(hsv, yellow_lower, yellow_upper)
-    green_mask = cv.inRange(hsv, green_lower, green_upper)
+def move_backward(speed):
+    """ถอยหลัง"""
+    GPIO.output(in1, GPIO.HIGH)
+    GPIO.output(in2, GPIO.LOW)
+    pwmA.ChangeDutyCycle(speed)
 
-    contours_red, _ = cv.findContours(red_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    contours_yellow, _ = cv.findContours(yellow_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    contours_green, _ = cv.findContours(green_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+def stop():
+    """หยุดการเคลื่อนไหว"""
+    GPIO.output(in1, GPIO.LOW)
+    GPIO.output(in2, GPIO.LOW)
+    pwmA.ChangeDutyCycle(0)
 
-    if contours_red:
-        return 'red'
-    elif contours_yellow:
-        return 'yellow'
-    elif contours_green:
-        return 'green'
-    return None
+def turn_servo_to_position(percentage):
+    """ปรับตำแหน่งเซอร์โวตามเปอร์เซ็นต์"""
+    position = percentage / 100.0
+    servo.value = position
+
+def keep_center():
+    """ปรับตำแหน่งเซอร์โวเพื่อให้รถอยู่กลางเลน"""
+    left_dist = distance(sensors["left"])
+    right_dist = distance(sensors["right"])
+
+    if left_dist < 100 and right_dist < 100:
+        if left_dist > right_dist:
+            turn_servo_to_position(-50)  # เลี้ยวซ้าย
+        elif right_dist > left_dist:
+            turn_servo_to_position(50)  # เลี้ยวขวา
+        else:
+            turn_servo_to_position(0)  # อยู่กลาง
+    elif left_dist < 100:
+        turn_servo_to_position(-50)  # เลี้ยวซ้าย
+    elif right_dist < 100:
+        turn_servo_to_position(50)  # เลี้ยวขวา
+
+def avoid_obstacle():
+    """ฟังก์ชันหลักสำหรับหลบสิ่งกีดขวางและตัดสินใจ"""
+    while system_running:
+        front_dist = distance(sensors["front"])
+        back_dist = distance(sensors["back"])
+
+        # ตรวจสอบระยะทางด้านหน้าและด้านหลัง
+        if front_dist < 100:
+            stop()
+            time.sleep(0.5)
+
+            # ถอยหลัง
+            move_backward(50)
+            time.sleep(1)
+            stop()
+            time.sleep(0.5)
+
+            while front_dist < 100:
+                back_dist = distance(sensors["back"])
+                front_dist = distance(sensors["front"])
+
+                if back_dist < 20:
+                    turn_servo_to_position(50)  # เลี้ยวขวา
+                    move_forward(20)
+                    time.sleep(1)
+                else:
+                    left_dist = distance(sensors["left"])
+                    right_dist = distance(sensors["right"])
+
+                    if left_dist > right_dist:
+                        turn_servo_to_position(-50)  # เลี้ยวซ้าย
+                        move_forward(50)
+                        time.sleep(1)
+                    else:
+                        turn_servo_to_position(50)  # เลี้ยวขวา
+                        move_forward(20)
+                        time.sleep(1)
+
+                front_dist = distance(sensors["front"])
+                stop()
+                time.sleep(0.5)
+            
+            move_forward(40)
+            time.sleep(1)
+        else:
+            move_forward(40)
+
+        keep_center()
+
+def toggle_system():
+    """สลับการทำงานของระบบเมื่อกดปุ่ม"""
+    global system_running
+    if system_running:
+        stop()
+        system_running = False
+        print("ระบบหยุดทำงาน")
+    else:
+        system_running = True
+        print("ระบบเริ่มทำงาน")
+
+# กำหนดให้เมื่อกดปุ่มจะเปลี่ยนสถานะการทำงาน
+button.when_pressed = toggle_system
+
+# สถานะเริ่มต้น
+system_running = False
 
 try:
+    print("กดปุ่มเพื่อเริ่มหรือหยุดระบบ")
+
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame = cv.resize(frame, (600, 600))
-        traffic_light = detect_traffic_light(frame)
-
-        # Measure distances from all ultrasonic sensors
-        front_distance = measure_distance(FRONT_TRIG, FRONT_ECHO)
-        left_distance = measure_distance(LEFT_TRIG, LEFT_ECHO)
-        right_distance = measure_distance(RIGHT_TRIG, RIGHT_ECHO)
-        back_distance = measure_distance(BACK_TRIG, BACK_ECHO)
-
-        cv.putText(frame, f'Front Distance: {front_distance} cm', (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv.putText(frame, f'Left Distance: {left_distance} cm', (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv.putText(frame, f'Right Distance: {right_distance} cm', (10, 90), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv.putText(frame, f'Back Distance: {back_distance} cm', (10, 120), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        if traffic_light == 'red':
-            drive_motor('stop')
-            cv.putText(frame, 'Red Light Detected', (10, 150), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-        elif traffic_light == 'yellow':
-            drive_motor('stop')
-            cv.putText(frame, 'Yellow Light Detected', (10, 150), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-        elif traffic_light == 'green':
-            cv.putText(frame, 'Green Light Detected', (10, 150), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-
-        # Obstacle Avoidance Logic
-        if front_distance is not None and front_distance < 20:
-            drive_motor('stop')
-            cv.putText(frame, 'Obstacle Detected Ahead!', (10, 180), cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-        elif left_distance < 15 and right_distance >= 15:
-            turn_servo('right')
-            time.sleep(1)
-            turn_servo('straight')
-        elif right_distance < 15 and left_distance >= 15:
-            turn_servo('left')
-            time.sleep(1)
-            turn_servo('straight')
-        elif back_distance is not None and back_distance < 15:
-            drive_motor('stop')
-            cv.putText(frame, 'Obstacle Detected Behind!', (10, 180), cv.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+        if system_running:
+            avoid_obstacle()
         else:
-            if traffic_light != 'red':
-                drive_motor('forward')
+            time.sleep(0.1)
 
-        cv.imshow('Self-Driving Car', frame)
-        if cv.waitKey(1) & 0xFF == ord('q'):
-            break
-
-finally:
-    cap.release()
-    cv.destroyAllWindows()
-    drive_motor('stop')
-    turn_servo('straight')
-    servo.stop()
-    motor_pwm.stop()
+except KeyboardInterrupt:
+    print("การทำงานหยุดโดยผู้ใช้")
+    stop()
     GPIO.cleanup()
